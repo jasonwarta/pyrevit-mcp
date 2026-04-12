@@ -107,7 +107,9 @@ Register the MCP server at the **user level** so it's available from any project
 }
 ```
 
-Replace `C:/absolute/path/to/` with the actual path to where you cloned this repo. The MCP server must be registered at the user level (not project level) so Claude Code can connect to Revit regardless of which directory it's launched from.
+Replace `C:/absolute/path/to/` with the actual path to where you cloned this repo.
+
+Alternatively, the repo includes a `.mcp.json` with a relative path that works when Claude Code is launched from the repo directory. The user-level config is preferred for production use since it works from any directory.
 
 ## Usage
 
@@ -190,6 +192,15 @@ All code in `camper-mcp.extension/` runs under **IronPython 2.7** inside Revit's
 
 The MCP server (`revit-mcp-server/`) runs under CPython 3.10+ and can use modern Python.
 
-## Spec
+## Status
 
-Full specification: [docs/specs/2026-04-10-revit-mcp-bridge.md](docs/specs/2026-04-10-revit-mcp-bridge.md)
+**Work in progress.** The code has been written against the spec but has not yet been end-to-end tested with a live Revit instance. The MCP server passes its mock-based conformance tests. The pyRevit extension routes have not been tested inside Revit yet.
+
+Known issues:
+- pyRevit 6.4.0 crashes on some machines (suspected stale install artifacts from pyRevit 5.x). Clean install on fresh machines works. See [docs/guides/pyrevit-clean-slate.md](docs/guides/pyrevit-clean-slate.md).
+- The pyRevit extension route registration mechanism is still being validated.
+
+## Docs
+
+- [Full specification](docs/specs/2026-04-10-revit-mcp-bridge.md) — architecture, route definitions, tool schemas, error handling, test matrix
+- [pyRevit clean slate guide](docs/guides/pyrevit-clean-slate.md) — complete removal and fresh install instructions
