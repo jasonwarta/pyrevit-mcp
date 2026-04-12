@@ -28,8 +28,8 @@ from pyrevit.api import DB
 def eid_int(eid):
     """Extract the integer value from an ElementId, compatible with all Revit versions."""
     if hasattr(eid, "Value"):
-        return eid.Value  # Revit 2024+
-    return eid.IntegerValue  # Revit 2022-2023
+        return int(eid.Value)  # Revit 2024+ (.Value returns Int64, cast to Python int)
+    return int(eid.IntegerValue)  # Revit 2022-2023
 
 
 # ---------------------------------------------------------------------------

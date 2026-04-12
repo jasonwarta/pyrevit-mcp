@@ -14,6 +14,8 @@ import math
 import time
 import traceback
 
+from System import Int64
+
 from pyrevit.api import DB, UI
 from pyrevit import routes, HOST_APP
 from pyrevit.coreutils.logger import get_logger
@@ -91,7 +93,7 @@ def _list_available_families(doc):
 
 def _get_phase_by_id(doc, phase_id):
     """Get a Phase element by integer id."""
-    eid = DB.ElementId(phase_id)
+    eid = DB.ElementId(Int64(phase_id))
     elem = doc.GetElement(eid)
     if elem is None or not isinstance(elem, DB.Phase):
         return None
@@ -297,7 +299,7 @@ def list_elements_by_category(uiapp, request, category):
 @api.route("/elements/id/<int:element_id>", methods=["GET"])
 def get_element_by_id(uiapp, request, element_id):
     doc = uiapp.ActiveUIDocument.Document
-    eid = DB.ElementId(element_id)
+    eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
         return _error_response("Element {} not found".format(element_id))
@@ -314,7 +316,7 @@ def set_element_parameters(uiapp, request, element_id):
     data = request.data or {}
     params_to_set = data.get("parameters", {})
 
-    eid = DB.ElementId(element_id)
+    eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
         return _error_response("Element {} not found".format(element_id))
@@ -348,7 +350,7 @@ def set_element_parameters(uiapp, request, element_id):
                 elif st == DB.StorageType.Double:
                     param.Set(float(value))
                 elif st == DB.StorageType.ElementId:
-                    param.Set(DB.ElementId(int(value)))
+                    param.Set(DB.ElementId(Int64(int(value))))
                 updated.append(name)
             except Exception as exc:
                 failed.append({"name": name, "error": str(exc)})
@@ -972,7 +974,7 @@ def list_schedules(uiapp, request):
 @api.route("/schedules/export/<int:schedule_id>", methods=["POST", "GET"])
 def export_schedule(uiapp, request, schedule_id):
     doc = uiapp.ActiveUIDocument.Document
-    eid = DB.ElementId(schedule_id)
+    eid = DB.ElementId(Int64(schedule_id))
     elem = doc.GetElement(eid)
     if elem is None or not isinstance(elem, DB.ViewSchedule):
         return _error_response("Schedule {} not found".format(schedule_id))
@@ -1080,7 +1082,7 @@ def create_view(uiapp, request):
         if phase_id is not None:
             phase_param = view.get_Parameter(DB.BuiltInParameter.VIEW_PHASE)
             if phase_param and not phase_param.IsReadOnly:
-                phase_param.Set(DB.ElementId(phase_id))
+                phase_param.Set(DB.ElementId(Int64(phase_id)))
 
         txn.Commit()
 
@@ -1129,7 +1131,7 @@ def delete_elements(uiapp, request):
     failed = []
     try:
         for eid_val in element_ids:
-            eid = DB.ElementId(eid_val)
+            eid = DB.ElementId(Int64(eid_val))
             elem = doc.GetElement(eid)
             if elem is None:
                 failed.append({"element_id": eid_val, "error": "Not found"})
@@ -1160,7 +1162,7 @@ def delete_elements(uiapp, request):
 @api.route("/materials/<int:element_id>", methods=["GET"])
 def get_material_quantities(uiapp, request, element_id):
     doc = uiapp.ActiveUIDocument.Document
-    eid = DB.ElementId(element_id)
+    eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
         return _error_response("Element {} not found".format(element_id))
@@ -1363,7 +1365,7 @@ def discovery_spatial(uiapp, request):
 @api.route("/discovery/connections/<int:element_id>", methods=["GET"])
 def discovery_connections(uiapp, request, element_id):
     doc = uiapp.ActiveUIDocument.Document
-    eid = DB.ElementId(element_id)
+    eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
         return _error_response("Element {} not found".format(element_id))
@@ -1468,7 +1470,7 @@ def discovery_bom(uiapp, request):
     elements = []
     if scope == "assembly":
         asm_id = data.get("assembly_id")
-        asm = doc.GetElement(DB.ElementId(asm_id))
+        asm = doc.GetElement(DB.ElementId(Int64(asm_id)))
         if asm and hasattr(asm, "GetMemberIds"):
             for mid in asm.GetMemberIds():
                 me = doc.GetElement(mid)
@@ -1476,7 +1478,7 @@ def discovery_bom(uiapp, request):
                     elements.append(me)
     elif scope == "elements":
         for eid_val in data.get("element_ids", []):
-            e = doc.GetElement(DB.ElementId(eid_val))
+            e = doc.GetElement(DB.ElementId(Int64(eid_val)))
             if e:
                 elements.append(e)
     else:  # "all"
@@ -1834,7 +1836,7 @@ def discovery_families(uiapp, request):
 @api.route("/discovery/assembly/<int:assembly_id>", methods=["GET"])
 def discovery_assembly(uiapp, request, assembly_id):
     doc = uiapp.ActiveUIDocument.Document
-    eid = DB.ElementId(assembly_id)
+    eid = DB.ElementId(Int64(assembly_id))
     asm = doc.GetElement(eid)
     if asm is None:
         return _error_response("Assembly {} not found".format(assembly_id))
@@ -1904,7 +1906,7 @@ def discovery_assembly(uiapp, request, assembly_id):
 @api.route("/discovery/view/<int:view_id>", methods=["GET"])
 def discovery_view(uiapp, request, view_id):
     doc = uiapp.ActiveUIDocument.Document
-    eid = DB.ElementId(view_id)
+    eid = DB.ElementId(Int64(view_id))
     view = doc.GetElement(eid)
     if view is None or not isinstance(view, DB.View):
         return _error_response("View {} not found".format(view_id))
