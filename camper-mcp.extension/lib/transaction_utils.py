@@ -50,9 +50,9 @@ def run_in_transaction(doc, func, transaction_name="MCP Operation"):
         txn.Start()
         tr.transaction_status = "started"
         tr.result = func(doc)
-        txn.Commit()
-        tr.transaction_status = "committed"
-        tr.success = True
+        status = txn.Commit()
+        tr.transaction_status = str(status)
+        tr.success = (str(status) == "Committed")
     except Exception as exc:
         tr.error = str(exc)
         tr.traceback_str = traceback.format_exc()

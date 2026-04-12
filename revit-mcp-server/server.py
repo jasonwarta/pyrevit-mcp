@@ -69,7 +69,9 @@ def _record_stat(tool_name: str, success: bool, elapsed_ms: float) -> None:
 # HTTP helper
 # ---------------------------------------------------------------------------
 
-_client = httpx.Client(base_url=BASE_URL, timeout=REQUEST_TIMEOUT)
+def _make_client() -> httpx.Client:
+    """Create a fresh httpx Client. One per request avoids thread-safety issues."""
+    return httpx.Client(base_url=BASE_URL, timeout=REQUEST_TIMEOUT)
 
 
 def _request(
@@ -85,8 +87,27 @@ def _request(
     """
     start = time.time()
     try:
-        resp = _client.request(method, path, json=json_body)
+        with _make_client() as client:
+            resp = client.request(method, path, json=json_body)
+
         elapsed_ms = (time.time() - start) * 1000
+
+        # Check HTTP-level errors before parsing JSON
+        if resp.status_code >= 400:
+            content_type = resp.headers.get("content-type", "")
+            if "application/json" in content_type:
+                try:
+                    data = resp.json()
+                    error_msg = data.get("error", resp.text) if isinstance(data, dict) else resp.text
+                except Exception:
+                    error_msg = resp.text
+            else:
+                error_msg = resp.text
+            _record_stat(tool_name, False, elapsed_ms)
+            raise RuntimeError(
+                f"Revit returned HTTP {resp.status_code}: {error_msg}"
+            )
+
         data = resp.json()
 
         # Application-level error
@@ -179,6 +200,7 @@ def revit_execute(
         timeout: Max execution time in seconds (default 30).
         transaction_name: If provided, wraps execution in a Revit transaction.
     """
+    timeout = max(1, min(timeout, 300))
     body: dict[str, Any] = {"code": code, "timeout": timeout}
     if transaction_name is not None:
         body["transaction_name"] = transaction_name
@@ -321,13 +343,17 @@ def revit_place_part(
         rotation_degrees: Z-axis rotation in degrees (default 0).
         parameters: Optional parameter values to set after placement.
     """
+    import math as _math
+    for name, val in [("x", x), ("y", y), ("z", z), ("rotation_degrees", rotation_degrees)]:
+        if not _math.isfinite(val):
+            raise ValueError(f"{name} must be a finite number, got {val}")
     body: dict[str, Any] = {
         "family_name": family_name,
         "type_name": type_name,
         "location": {"x": x, "y": y, "z": z},
         "rotation_degrees": rotation_degrees,
     }
-    if parameters:
+    if parameters is not None:
         body["parameters"] = parameters
     if phase_name and not phase_id:
         body["phase_name"] = phase_name
@@ -607,7 +633,7 @@ def revit_delete_elements(element_ids: list[int]) -> str:
     """
     data = _request(
         "POST", "/elements",
-        json_body={"element_ids": element_ids, "_method": "DELETE"},
+        json_body={"element_ids": element_ids},
         tool_name="revit_delete_elements",
     )
     return json.dumps(data, indent=2)
@@ -723,13 +749,23 @@ def revit_spatial_query(
     """
     body: dict[str, Any] = {"mode": mode}
     if mode == "bounding_box":
-        body["min"] = {"x": min_x or 0, "y": min_y or 0, "z": min_z or 0}
-        body["max"] = {"x": max_x or 0, "y": max_y or 0, "z": max_z or 0}
+        body["min"] = {
+            "x": min_x if min_x is not None else 0.0,
+            "y": min_y if min_y is not None else 0.0,
+            "z": min_z if min_z is not None else 0.0,
+        }
+        body["max"] = {
+            "x": max_x if max_x is not None else 0.0,
+            "y": max_y if max_y is not None else 0.0,
+            "z": max_z if max_z is not None else 0.0,
+        }
     elif mode == "proximity":
         body["center"] = {
-            "x": center_x or 0, "y": center_y or 0, "z": center_z or 0,
+            "x": center_x if center_x is not None else 0.0,
+            "y": center_y if center_y is not None else 0.0,
+            "z": center_z if center_z is not None else 0.0,
         }
-        body["radius_ft"] = radius_ft or 5.0
+        body["radius_ft"] = radius_ft if radius_ft is not None else 5.0
     if categories:
         body["categories"] = categories
     data = _request(

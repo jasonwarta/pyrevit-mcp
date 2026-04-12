@@ -48,17 +48,15 @@ api = routes.API(API_NAME)
 # ===================================================================
 
 def _resolve_category(category_name):
-    """Map a user-friendly category name to a BuiltInCategory enum value."""
+    """Map a user-friendly category name to a BuiltInCategory enum value.
+
+    Exact match only (case-insensitive, spaces stripped). No substring
+    guessing — returns None if no exact match found.
+    """
     lookup = category_name.strip().lower().replace(" ", "")
-    # Try common names first
     for bic in DB.BuiltInCategory.GetValues(DB.BuiltInCategory):
         name = str(bic).replace("OST_", "").lower()
         if name == lookup:
-            return bic
-    # Broader search
-    for bic in DB.BuiltInCategory.GetValues(DB.BuiltInCategory):
-        name = str(bic).replace("OST_", "").lower()
-        if lookup in name or name in lookup:
             return bic
     return None
 
@@ -168,6 +166,22 @@ def _error_response(message, suggestion=None):
     return resp
 
 
+def _get_doc(uiapp):
+    """Get the active document, or return None if no document is open."""
+    uidoc = uiapp.ActiveUIDocument
+    if uidoc is None:
+        return None
+    return uidoc.Document
+
+
+def _require_doc(uiapp):
+    """Get the active document, or return an error response dict."""
+    doc = _get_doc(uiapp)
+    if doc is None:
+        return None, _error_response("No active Revit document is open")
+    return doc, None
+
+
 # ===================================================================
 # 6.2.1  Health Check
 # ===================================================================
@@ -202,7 +216,9 @@ def execute_code(uiapp, request):
     timeout = data.get("timeout", 30)
     txn_name = data.get("transaction_name", None)
 
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     uidoc = uiapp.ActiveUIDocument
     start = time.time()
 
@@ -268,7 +284,9 @@ def execute_code(uiapp, request):
 
 @api.route("/elements/<category>", methods=["GET", "POST"])
 def list_elements_by_category(uiapp, request, category):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
     include_params = data.get("include_parameters", [])
 
@@ -298,7 +316,9 @@ def list_elements_by_category(uiapp, request, category):
 
 @api.route("/elements/id/<int:element_id>", methods=["GET"])
 def get_element_by_id(uiapp, request, element_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
@@ -312,7 +332,9 @@ def get_element_by_id(uiapp, request, element_id):
 
 @api.route("/elements/id/<int:element_id>/parameters", methods=["PUT", "POST"])
 def set_element_parameters(uiapp, request, element_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
     params_to_set = data.get("parameters", {})
 
@@ -363,7 +385,7 @@ def set_element_parameters(uiapp, request, element_id):
         return _error_response(str(exc))
 
     return {
-        "success": True,
+        "success": len(updated) > 0 or len(failed) == 0,
         "element_id": element_id,
         "updated": updated,
         "failed": failed,
@@ -377,7 +399,9 @@ def set_element_parameters(uiapp, request, element_id):
 
 @api.route("/panels", methods=["GET"])
 def list_panels(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     phases = doc.Phases
     result = []
     for phase in phases:
@@ -397,7 +421,9 @@ def list_panels(uiapp, request):
 @api.route("/panels/by-name/<phase_name>", methods=["GET"])
 @api.route("/panels/<int:phase_id>", methods=["GET"])
 def get_panel_detail(uiapp, request, phase_id=None, phase_name=None):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     phase, err = _resolve_phase(doc, phase_id=phase_id, phase_name=phase_name)
     if err:
         return _error_response(err)
@@ -436,7 +462,9 @@ def get_panel_detail(uiapp, request, phase_id=None, phase_name=None):
 
 @api.route("/panels/<int:phase_id>/parts", methods=["POST"])
 def place_part(uiapp, request, phase_id=None):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     phase_name = data.get("phase_name", None)
@@ -543,7 +571,9 @@ def place_part(uiapp, request, phase_id=None):
 
 @api.route("/panels/<int:phase_id>/parts/batch", methods=["POST"])
 def batch_place_parts(uiapp, request, phase_id=None):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     phase_name = data.get("phase_name", None)
@@ -649,7 +679,9 @@ def batch_place_parts(uiapp, request, phase_id=None):
 
 @api.route("/panels", methods=["POST"])
 def create_panel(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     name = data.get("name", "New Panel")
@@ -738,7 +770,9 @@ def create_panel(uiapp, request):
 
 @api.route("/cutlist", methods=["POST"])
 def generate_cutlist(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     scope = data.get("scope", "all")
@@ -814,7 +848,7 @@ def generate_cutlist(uiapp, request):
             groups.setdefault(key, []).append(r)
     elif group_by == "family_and_panel":
         for r in part_records:
-            key = r["family"]
+            key = "{} | {}".format(r["family"], r["panel"])
             groups.setdefault(key, []).append(r)
 
     # Build response
@@ -880,7 +914,9 @@ def generate_cutlist(uiapp, request):
 
 @api.route("/planes", methods=["GET"])
 def list_reference_planes(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     collector = DB.FilteredElementCollector(doc).OfClass(DB.ReferencePlane)
     planes = []
     for rp in collector:
@@ -903,7 +939,9 @@ def list_reference_planes(uiapp, request):
 
 @api.route("/types/<category>", methods=["GET"])
 def list_types(uiapp, request, category):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     bic = _resolve_category(category)
     if bic is None:
         return _error_response("Category '{}' not found".format(category))
@@ -935,7 +973,9 @@ def list_types(uiapp, request, category):
 
 @api.route("/levels", methods=["GET"])
 def list_levels(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     collector = DB.FilteredElementCollector(doc).OfClass(DB.Level)
     levels = []
     for lev in collector:
@@ -954,7 +994,9 @@ def list_levels(uiapp, request):
 
 @api.route("/schedules", methods=["GET"])
 def list_schedules(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     collector = (
         DB.FilteredElementCollector(doc)
         .OfClass(DB.ViewSchedule)
@@ -973,7 +1015,9 @@ def list_schedules(uiapp, request):
 
 @api.route("/schedules/export/<int:schedule_id>", methods=["POST", "GET"])
 def export_schedule(uiapp, request, schedule_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     eid = DB.ElementId(Int64(schedule_id))
     elem = doc.GetElement(eid)
     if elem is None or not isinstance(elem, DB.ViewSchedule):
@@ -1019,7 +1063,9 @@ def export_schedule(uiapp, request, schedule_id):
 
 @api.route("/create/view", methods=["POST"])
 def create_view(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     view_type = data.get("view_type", "floor_plan")
@@ -1114,16 +1160,14 @@ def _get_view_family_type(doc, view_family):
 
 @api.route("/elements", methods=["DELETE", "POST"])
 def delete_elements(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
     element_ids = data.get("element_ids", [])
 
     if not element_ids:
         return _error_response("No element_ids provided")
-
-    # Use POST with _method=DELETE workaround if needed
-    if request.method == "POST" and data.get("_method") != "DELETE" and "element_ids" not in data:
-        return _error_response("Invalid request")
 
     txn = DB.Transaction(doc, "MCP Delete Elements")
     txn.Start()
@@ -1161,7 +1205,9 @@ def delete_elements(uiapp, request):
 
 @api.route("/materials/<int:element_id>", methods=["GET"])
 def get_material_quantities(uiapp, request, element_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
@@ -1193,7 +1239,9 @@ def get_material_quantities(uiapp, request, element_id):
 
 @api.route("/discovery/summary", methods=["GET"])
 def discovery_summary(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
 
     # Categories with counts — single pass
     cat_counts = {}
@@ -1278,7 +1326,9 @@ def discovery_summary(uiapp, request):
 
 @api.route("/discovery/spatial", methods=["POST"])
 def discovery_spatial(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     mode = data.get("mode", "bounding_box")
@@ -1364,7 +1414,9 @@ def discovery_spatial(uiapp, request):
 
 @api.route("/discovery/connections/<int:element_id>", methods=["GET"])
 def discovery_connections(uiapp, request, element_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     eid = DB.ElementId(Int64(element_id))
     elem = doc.GetElement(eid)
     if elem is None:
@@ -1459,7 +1511,9 @@ def _get_type_name(doc, elem):
 
 @api.route("/discovery/bom", methods=["POST"])
 def discovery_bom(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
 
     scope = data.get("scope", "all")
@@ -1616,7 +1670,9 @@ def discovery_bom(uiapp, request):
 
 @api.route("/discovery/parameters", methods=["GET"])
 def discovery_parameters(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
 
     shared_params = []
     project_params = []
@@ -1702,7 +1758,9 @@ def discovery_parameters(uiapp, request):
 
 @api.route("/discovery/families", methods=["GET", "POST"])
 def discovery_families(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     data = request.data or {}
     filter_category = data.get("category", None)
 
@@ -1835,7 +1893,9 @@ def discovery_families(uiapp, request):
 
 @api.route("/discovery/assembly/<int:assembly_id>", methods=["GET"])
 def discovery_assembly(uiapp, request, assembly_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     eid = DB.ElementId(Int64(assembly_id))
     asm = doc.GetElement(eid)
     if asm is None:
@@ -1905,7 +1965,9 @@ def discovery_assembly(uiapp, request, assembly_id):
 
 @api.route("/discovery/view/<int:view_id>", methods=["GET"])
 def discovery_view(uiapp, request, view_id):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     eid = DB.ElementId(Int64(view_id))
     view = doc.GetElement(eid)
     if view is None or not isinstance(view, DB.View):
@@ -1982,7 +2044,9 @@ def discovery_view(uiapp, request, view_id):
 
 @api.route("/discovery/sheets", methods=["GET"])
 def discovery_sheets(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
     sheets = []
     for sheet in DB.FilteredElementCollector(doc).OfClass(DB.ViewSheet):
         views_on = []
@@ -2033,7 +2097,9 @@ def discovery_sheets(uiapp, request):
 
 @api.route("/discovery/warnings", methods=["GET"])
 def discovery_warnings(uiapp, request):
-    doc = uiapp.ActiveUIDocument.Document
+    doc, err = _require_doc(uiapp)
+    if err:
+        return err
 
     warnings = []
     if hasattr(doc, "GetWarnings"):
