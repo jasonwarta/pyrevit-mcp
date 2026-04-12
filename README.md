@@ -21,7 +21,7 @@ Two components:
 - Python 3.10+ (CPython) for the MCP server
 - `mcp` and `httpx` Python packages
 
-**Check for existing pyRevit installations first.** Run `pyrevit` in PowerShell — if you get anything other than "command not found", there's a previous installation on this machine. Follow [docs/guides/pyrevit-clean-slate.md](docs/guides/pyrevit-clean-slate.md) to fully remove all traces before proceeding. Leftover addin files, clones, or config from old installations will cause silent failures.
+**Check for existing pyRevit installations first.** Run `pyrevit` in PowerShell — if you get anything other than "command not found", there's a previous installation on this machine. Follow [docs/guides/pyrevit-clean-slate.md](docs/guides/pyrevit-clean-slate.md) to fully remove all traces before proceeding. Leftover addin files, clones, or config from old installations will cause failures ranging from Revit crashes on startup to extensions that silently refuse to load.
 
 ## Setup
 
