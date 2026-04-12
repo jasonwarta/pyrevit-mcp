@@ -166,6 +166,14 @@ def revit_execute(
     Use 'return' to send a value back. If transaction_name is provided,
     the code runs inside a named Revit transaction (for model-modifying ops).
 
+    IMPORTANT: This is an escape hatch for operations not covered by the
+    dedicated tools. If you find yourself executing similar code more than
+    once for the same purpose, you MUST propose adding a new dedicated tool
+    for that operation instead of continuing to use revit_execute. Dedicated
+    tools are safer, faster, and produce consistent results. Tell the user:
+    "I've used revit_execute for [X] multiple times — we should add a
+    dedicated tool for this." Then help build it.
+
     Args:
         code: Python code to execute inside Revit.
         timeout: Max execution time in seconds (default 30).
