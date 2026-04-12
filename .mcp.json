@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "revit": {
+      "command": "python",
+      "args": ["revit-mcp-server/server.py"],
+      "env": {
+        "REVIT_ROUTES_HOST": "127.0.0.1",
+        "REVIT_ROUTES_PORT": "48884"
+      }
+    }
+  }
+}

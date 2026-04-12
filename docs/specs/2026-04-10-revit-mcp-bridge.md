@@ -96,7 +96,7 @@ All communication is local (localhost). The MCP server is a stateless proxy — 
 Represents a block of Python code to be executed inside Revit's context.
 
 Fields:
-- `code` (string) — Python source code to execute. Must be valid IronPython 2.7 or CPython 3.x depending on pyRevit engine configuration. Required.
+- `code` (string) — Python source code to execute. Must be valid IronPython 2.7 (confirmed runtime even on Revit 2026). The `execute` handler pre-injects `DB` and `UI` into the namespace, so user code can reference `DB.Wall`, `DB.FilteredElementCollector`, etc. directly without import statements. Required.
 - `timeout` (integer) — Maximum execution time in seconds. Default: 30. If exceeded, the operation is aborted and an error is returned.
 - `transaction_name` (string) — Name for the Revit transaction that wraps model-modifying operations. Default: `"MCP Operation"`. If null, no transaction is created (read-only operation).
 
@@ -276,6 +276,8 @@ camper-mcp.extension/
 │   └── transaction_utils.py    # Transaction wrapper utilities
 ```
 
+**Import path behavior**: pyRevit automatically prepends the extension's `lib/` directory to `sys.path` before executing `startup.py`. This means `startup.py` can `import mcp_routes` directly (not `from lib import mcp_routes`), and modules within `lib/` can import each other by name (e.g., `from serializers import ...` inside `mcp_routes.py`).
+
 #### 5.3.2 Deployment Location
 
 pyRevit loads extensions from its configured extensions directory. Default:
@@ -290,11 +292,21 @@ To find the actual path:
 pyrevit extensions paths
 ```
 
-Copy the `camper-mcp.extension` folder into that directory. Restart Revit (or reload pyRevit via the ribbon) to activate.
+Copy the `camper-mcp.extension` folder into that directory. Restart Revit (or reload pyRevit via the ribbon) to activate. **Note**: pyRevit reload takes 30+ seconds and Revit will appear frozen during that time. This is normal — pyRevit recompiles extension DLLs and re-registers all routes.
 
 #### 5.3.3 Extension Registration
 
 pyRevit auto-discovers `.extension` folders. No additional registration is needed. On startup, pyRevit executes `startup.py`, which registers all routes with the Routes server.
+
+#### 5.3.4 IronPython 2.7 Compatibility
+
+**Critical**: pyRevit's script engine is IronPython 2.7, even on Revit 2026 (confirmed by `Server: Python/2.7.12` in HTTP response headers). All Python files in the extension must:
+
+1. **Start with an encoding declaration**: `# -*- coding: utf-8 -*-` as the very first line. Without this, any non-ASCII character — even in comments — will crash the IronPython parser with a `SyntaxError`.
+2. **Use Python 2.7 syntax only**: No f-strings, no `type | None` unions, no walrus operator (`:=`), no `async`/`await`. Use `.format()` for string formatting.
+3. **Import Revit API through pyRevit**: Use `from pyrevit.api import DB, UI` — not `from Autodesk.Revit import DB`. The `pyrevit.api` module calls `clr.AddReference('RevitAPI')` first. Without this, the CLR assembly references may not be loaded and the import will fail silently at startup, preventing all routes from registering.
+
+This constraint applies only to code in `camper-mcp.extension/`. The MCP server (`revit-mcp-server/`) runs in CPython 3.10+ and can use modern Python syntax. Code sent via the `execute` endpoint runs in the same IronPython 2.7 runtime but has `DB` and `UI` pre-injected in its namespace.
 
 #### 5.3.4 Verification
 
@@ -331,7 +343,7 @@ Expected response:
 GET /camper-mcp/health
 ```
 
-No Revit API context needed. Returns server and document status.
+Requires Revit API context (`doc`) to return the document title. Returns server and document status. If no document is open, `doc` is `None` and `doc_title` is `null`.
 
 Response (200):
 ```json
@@ -1525,7 +1537,37 @@ This is critical to understand:
    - Blocks the HTTP thread until Revit's main thread picks it up and executes it.
    - Returns the result to the HTTP thread, which sends the HTTP response.
 4. This means: **only one Revit API operation can execute at a time**. Concurrent HTTP requests that need Revit API context are serialized by the ExternalEvent mechanism.
-5. Routes that do NOT declare `uiapp`/`uidoc`/`doc` run directly on the HTTP thread without waiting for the main thread. Use this for health checks, cached data, or non-Revit operations.
+5. Routes that do NOT declare `uiapp`/`uidoc`/`doc` run directly on the HTTP thread without waiting for the main thread. Use this for cached data or non-Revit operations.
+
+#### 6.5.1 Handler Signature Convention (Argument Injection)
+
+pyRevit Routes uses **parameter name inspection** to decide what to inject into each handler. This is the mechanism that controls whether a handler runs on Revit's main thread or the HTTP thread. The framework calls `inspect.getargspec()` on the handler and filters a set of well-known names:
+
+| Parameter Name | Injected Value | Triggers ExternalEvent? |
+|---------------|----------------|------------------------|
+| `uiapp` | `UI.UIApplication` | Yes |
+| `uidoc` | `uiapp.ActiveUIDocument` (may be `None`) | Yes |
+| `doc` | `uidoc.Document` (may be `None`) | Yes |
+| `request` | `base.Request` object with `.path`, `.method`, `.data` | No |
+
+URL pattern parameters (e.g., `element_id` from `<int:element_id>`) are also injected by matching the parameter name in the route pattern to the handler's argument name.
+
+**Only declare the parameters you need.** If a handler declares `doc` but not `uiapp`, it still runs on the main thread but only receives `doc`. A handler with no reserved parameter names runs directly on the HTTP thread.
+
+**Reserved names**: `request` and `uiapp` cannot be used as URL pattern parameter names.
+
+Example:
+```python
+# Runs on main thread (declares 'doc')
+@api.route("/elements/<int:element_id>", methods=["GET"])
+def get_element(doc, element_id):
+    ...
+
+# Runs on HTTP thread (no reserved names)
+@api.route("/version", methods=["GET"])
+def get_version():
+    ...
+```
 
 ### 6.6 Transaction Management
 
@@ -2023,12 +2065,15 @@ function handle_execute(uiapp, request):
     start_time = now()
 
     # Inject context variables into execution namespace
+    # Note: DB and UI are imported via `from pyrevit.api import DB, UI`
+    # in the extension module (not `from Autodesk.Revit import DB`).
+    # The pyrevit.api module handles CLR assembly reference loading.
     namespace = {
         "uiapp": uiapp,
         "uidoc": uiapp.ActiveUIDocument,
         "doc": doc,
-        "DB": Autodesk.Revit.DB,
-        "UI": Autodesk.Revit.UI,
+        "DB": DB,    # Autodesk.Revit.DB, imported via pyrevit.api
+        "UI": UI,    # Autodesk.Revit.UI, imported via pyrevit.api
         "__result__": None
     }
 
@@ -2237,3 +2282,65 @@ These tests validate the complete Claude Code → MCP → Routes → Revit pipel
 - [ ] TODO: Template project with pre-loaded part families and standard phases.
 - [ ] TODO: Panel diff — compare two panels and report what's different (added/removed/changed parts).
 - [ ] TODO: View screenshot capture — return a rendered image of a view for Claude Code to inspect visually.
+
+## 14. Lessons Learned (Implementation Notes)
+
+These issues were discovered during the first implementation and deployment. They are also documented inline in the relevant spec sections.
+
+### 14.1 pyRevit Runs IronPython 2.7
+
+pyRevit's script engine is IronPython 2.7, confirmed by the `Server: Python/2.7.12` header in HTTP responses. This is true even on Revit 2026, which uses .NET 8. The .NET runtime version and the Python scripting engine version are independent.
+
+**Impact**: All Python files in `camper-mcp.extension/` must use Python 2.7 syntax. No f-strings, no type unions, no walrus operator. The MCP server (`revit-mcp-server/`) runs in a separate CPython 3.10+ process and is not affected.
+
+**See also**: Section 5.3.4.
+
+### 14.2 Encoding Declarations Are Mandatory
+
+Every `.py` file in the extension must start with `# -*- coding: utf-8 -*-` as the very first line. IronPython 2.7's parser rejects any non-ASCII byte (even in comments) unless an encoding is declared per PEP 263. A stray em dash or smart quote in a comment will prevent the entire extension from loading, and no routes will be registered.
+
+**Failure mode**: pyRevit logs a `SyntaxError` in `%APPDATA%\pyRevit\<year>\pyRevit_<year>_<pid>_runtime.log` and the extension silently fails to load. The Routes server still runs, but all requests to the extension's routes return `RouteHandlerNotDefinedException`.
+
+**See also**: Section 5.3.4.
+
+### 14.3 Revit API Imports Must Go Through `pyrevit.api`
+
+Extension code must use `from pyrevit.api import DB, UI` rather than `from Autodesk.Revit import DB`. The `pyrevit.api` module calls `clr.AddReference('RevitAPI')` and `clr.AddReference('RevitAPIUI')` before importing the namespaces. Without this, the CLR assembly references may not be loaded when the startup script runs, causing an `ImportError` that prevents route registration.
+
+This does **not** apply to code sent via the `execute` endpoint. The execute handler injects `DB` and `UI` into the execution namespace, so user code can use them directly.
+
+**See also**: Sections 5.3.4, 11.1.
+
+### 14.4 Handler Argument Names Control Execution Context
+
+pyRevit Routes uses `inspect.getargspec()` to inspect handler function signatures. The presence of `uiapp`, `uidoc`, or `doc` as parameter names determines whether the handler runs on Revit's main thread (via ExternalEvent) or directly on the HTTP server thread. This is not configured via decorators or metadata — it is purely based on parameter names.
+
+This means:
+- A handler named `def health_check():` runs on the HTTP thread and cannot access the Revit API.
+- A handler named `def health_check(doc):` runs on Revit's main thread and receives the active document (or `None` if no document is open).
+- Renaming a parameter from `doc` to `document` changes the execution behavior.
+
+URL pattern parameters (e.g., `<int:element_id>`) are also injected by matching the pattern variable name to the handler's argument name.
+
+**See also**: Section 6.5.1.
+
+### 14.5 pyRevit Reload Is Slow
+
+Reloading pyRevit (via the ribbon or CLI) takes 30+ seconds. During this time, Revit appears frozen. This is normal — pyRevit recompiles extension DLLs and re-registers all routes. Restarting Revit entirely is sometimes faster for iterating on extension changes.
+
+**See also**: Section 5.3.2.
+
+### 14.6 Extension Startup Errors Are Silent
+
+If `startup.py` throws an exception, pyRevit catches it and logs to `%APPDATA%\pyRevit\<year>\pyRevit_<year>_<pid>_runtime.log`. No UI notification is shown. The Routes server continues to run, but the extension's routes are not registered, so all requests return `RouteHandlerNotDefinedException`.
+
+**Debugging tip**: After deploying or modifying the extension, always check the runtime log file for errors. The log path follows the pattern: `%APPDATA%\pyRevit\<revit_year>\pyRevit_<revit_year>_<pid>_runtime.log`.
+
+### 14.7 `lib/` Is Auto-Prepended to `sys.path`
+
+pyRevit automatically adds the extension's `lib/` directory to `sys.path` (as the first entry) before executing `startup.py`. This means:
+- `startup.py` can `import mcp_routes` (not `from lib import mcp_routes`).
+- Modules within `lib/` can import each other by name: `from serializers import serialize`.
+- The `lib/` directory takes precedence over other paths, so module names in `lib/` should not collide with standard library or pyRevit module names.
+
+**See also**: Section 5.3.1.
