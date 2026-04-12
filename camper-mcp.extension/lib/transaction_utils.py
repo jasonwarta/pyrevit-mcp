@@ -54,11 +54,15 @@ def run_in_transaction(doc, func, transaction_name="MCP Operation"):
         tr.transaction_status = "committed"
         tr.success = True
     except Exception as exc:
-        if txn.HasStarted() and not txn.HasEnded():
-            txn.RollBack()
-            tr.transaction_status = "rolled_back"
         tr.error = str(exc)
         tr.traceback_str = traceback.format_exc()
+        try:
+            if txn.HasStarted() and not txn.HasEnded():
+                txn.RollBack()
+                tr.transaction_status = "rolled_back"
+        except Exception as rb_exc:
+            tr.transaction_status = "rollback_failed"
+            tr.error += " | Rollback failed: {}".format(rb_exc)
     finally:
         tr.execution_time_ms = int((time.time() - start) * 1000)
     return tr

@@ -13,7 +13,6 @@ import json
 import math
 import time
 import traceback
-import textwrap
 
 from pyrevit.api import DB, UI
 from pyrevit import routes, HOST_APP
@@ -117,12 +116,24 @@ def _get_elements_in_phase(doc, phase):
 
 
 def _find_reference_plane_for_phase(doc, phase):
-    """Find the reference plane associated with a phase (by naming convention)."""
-    phase_name = phase.Name
+    """Find the reference plane associated with a phase (by naming convention).
+
+    Matching priority:
+    1. Exact match (case-insensitive)
+    2. Plane name == phase name + " Plane" (case-insensitive)
+    3. No match — returns None (no substring guessing)
+    """
+    phase_name = phase.Name.strip().lower()
     collector = DB.FilteredElementCollector(doc).OfClass(DB.ReferencePlane)
     for rp in collector:
-        rp_name = rp.Name or ""
-        if phase_name.lower() in rp_name.lower() or rp_name.lower() in phase_name.lower():
+        rp_name = (rp.Name or "").strip().lower()
+        if rp_name == phase_name:
+            return rp
+    # Second pass: check for "phase name + Plane" convention
+    expected = phase_name + " plane"
+    for rp in DB.FilteredElementCollector(doc).OfClass(DB.ReferencePlane):
+        rp_name = (rp.Name or "").strip().lower()
+        if rp_name == expected:
             return rp
     return None
 
@@ -183,7 +194,8 @@ def execute_code(uiapp, request):
     }
 
     # Wrap code in a function to support return statements
-    indented = textwrap.indent(code, "    ")
+    # NOTE: textwrap.indent does not exist in IronPython 2.7 (Python 3.3+)
+    indented = "\n".join("    " + line for line in code.split("\n"))
     wrapped = "def _execute():\n{}\n__result__ = _execute()".format(indented)
 
     txn = None
@@ -440,9 +452,23 @@ def place_part(uiapp, request, phase_id):
         )
 
         # Assign to phase
+        # NOTE: PHASE_CREATED may be read-only depending on Revit version
+        # and element category. If Set() fails or parameter is read-only,
+        # we report it in the response so the caller knows.
+        phase_warning = None
         phase_param = instance.get_Parameter(DB.BuiltInParameter.PHASE_CREATED)
-        if phase_param and not phase_param.IsReadOnly:
-            phase_param.Set(phase.Id)
+        if phase_param is None:
+            phase_warning = "Element has no PHASE_CREATED parameter"
+        elif phase_param.IsReadOnly:
+            phase_warning = "PHASE_CREATED is read-only on this element"
+        else:
+            try:
+                phase_param.Set(phase.Id)
+                # Verify it stuck
+                if phase_param.AsElementId() != phase.Id:
+                    phase_warning = "PHASE_CREATED was set but did not take effect"
+            except Exception as pe:
+                phase_warning = "Failed to set PHASE_CREATED: {}".format(pe)
 
         # Apply rotation
         if rotation != 0.0:
@@ -468,7 +494,7 @@ def place_part(uiapp, request, phase_id):
         # Read back final params
         final_params = get_parameters_dict(instance)
 
-        return {
+        resp = {
             "success": True,
             "element_id": instance.Id.IntegerValue,
             "family": family_name,
@@ -477,6 +503,9 @@ def place_part(uiapp, request, phase_id):
             "parameters": final_params,
             "transaction_status": "committed",
         }
+        if phase_warning:
+            resp["phase_warning"] = phase_warning
+        return resp
 
     except Exception as exc:
         if txn.HasStarted() and not txn.HasEnded():
@@ -529,10 +558,13 @@ def batch_place_parts(uiapp, request, phase_id):
                     point, symbol, DB.Structure.StructuralType.NonStructural
                 )
 
-                # Assign phase
+                # Assign phase (may be read-only — see place_part)
                 phase_param = instance.get_Parameter(DB.BuiltInParameter.PHASE_CREATED)
                 if phase_param and not phase_param.IsReadOnly:
-                    phase_param.Set(phase.Id)
+                    try:
+                        phase_param.Set(phase.Id)
+                    except Exception:
+                        pass  # Phase assignment failure is non-fatal in batch
 
                 # Rotation
                 rotation = float(part.get("rotation_degrees", 0.0))
@@ -601,9 +633,8 @@ def create_panel(uiapp, request):
     txn = DB.Transaction(doc, "MCP Create Panel")
     txn.Start()
     try:
-        # Create phase
-        phase = doc.Phases.NewPhase()
-        phase.Name = name
+        # Create phase (Revit API: doc.Create.NewPhase takes name as argument)
+        phase = doc.Create.NewPhase(name)
         phase_id = phase.Id.IntegerValue
 
         ref_plane_id = None
@@ -1112,24 +1143,16 @@ def get_material_quantities(uiapp, request, element_id):
 def discovery_summary(uiapp, request):
     doc = uiapp.ActiveUIDocument.Document
 
-    # Categories with counts
-    categories = []
-    cat_set = set()
-    collector = (
-        DB.FilteredElementCollector(doc)
-        .WhereElementIsNotElementType()
-    )
-    for elem in collector:
+    # Categories with counts — single pass
+    cat_counts = {}
+    for elem in DB.FilteredElementCollector(doc).WhereElementIsNotElementType():
         cat = elem.Category
-        if cat and cat.Name and cat.Name not in cat_set:
-            cat_set.add(cat.Name)
-    for cat_name in sorted(cat_set):
-        count = 0
-        for elem in DB.FilteredElementCollector(doc).WhereElementIsNotElementType():
-            if elem.Category and elem.Category.Name == cat_name:
-                count += 1
-        if count > 0:
-            categories.append({"name": cat_name, "count": count})
+        if cat and cat.Name:
+            cat_counts[cat.Name] = cat_counts.get(cat.Name, 0) + 1
+    categories = [
+        {"name": n, "count": c}
+        for n, c in sorted(cat_counts.items())
+    ]
 
     # Phases as panels
     phases = []
