@@ -160,6 +160,10 @@ Once set up, Claude Code has access to 31 tools for interacting with Revit. No s
 | `REVIT_REQUEST_TIMEOUT` | `60` | HTTP request timeout (seconds) |
 | `REVIT_CODE_TIMEOUT` | `30` | Default code execution timeout (seconds) |
 
+## Known Revit API Limitations
+
+**Phases cannot be created or renamed via the API.** The spec uses Revit phases as "panels" (each phase = a distinct panel in the camper build). These must be created manually in Revit (Manage tab > Phases dialog) before the MCP tools can use them. Once a phase exists, parts can be placed on it by name (e.g., `phase_name="Driver Side Front"`) — the `PHASE_CREATED` parameter on family instances is writable.
+
 ## Troubleshooting
 
 **"Cannot connect to Revit"** — Revit isn't running, or Routes isn't enabled. Check that pyRevit is loaded (look for the pyRevit tab in Revit's ribbon) and that Routes is configured on the expected port.

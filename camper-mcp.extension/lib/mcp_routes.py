@@ -19,6 +19,7 @@ from pyrevit import routes, HOST_APP
 from pyrevit.coreutils.logger import get_logger
 
 from serializers import (
+    eid_int,
     serialize,
     serialize_xyz,
     serialize_element_id,
@@ -95,6 +96,25 @@ def _get_phase_by_id(doc, phase_id):
     if elem is None or not isinstance(elem, DB.Phase):
         return None
     return elem
+
+
+def _resolve_phase(doc, phase_id=None, phase_name=None):
+    """Resolve a phase by ID or name. Returns (phase, error_string)."""
+    if phase_id is not None:
+        phase = _get_phase_by_id(doc, phase_id)
+        if phase:
+            return phase, None
+        return None, "Phase with ID {} not found".format(phase_id)
+    if phase_name is not None:
+        target = phase_name.strip().lower()
+        for p in doc.Phases:
+            if p.Name.strip().lower() == target:
+                return p, None
+        available = [p.Name for p in doc.Phases]
+        return None, "Phase '{}' not found. Available phases: {}".format(
+            phase_name, available
+        )
+    return None, "Either phase_id or phase_name is required"
 
 
 def _get_elements_in_phase(doc, phase):
@@ -362,7 +382,7 @@ def list_panels(uiapp, request):
         parts = _get_elements_in_phase(doc, phase)
         result.append({
             "name": phase.Name,
-            "element_id": phase.Id.IntegerValue,
+            "element_id": eid_int(phase.Id),
             "part_count": len(parts),
         })
     return {"phases": result}
@@ -372,12 +392,13 @@ def list_panels(uiapp, request):
 # 6.2.7  Get Panel Detail
 # ===================================================================
 
+@api.route("/panels/by-name/<phase_name>", methods=["GET"])
 @api.route("/panels/<int:phase_id>", methods=["GET"])
-def get_panel_detail(uiapp, request, phase_id):
+def get_panel_detail(uiapp, request, phase_id=None, phase_name=None):
     doc = uiapp.ActiveUIDocument.Document
-    phase = _get_phase_by_id(doc, phase_id)
-    if phase is None:
-        return _error_response("Phase {} not found".format(phase_id))
+    phase, err = _resolve_phase(doc, phase_id=phase_id, phase_name=phase_name)
+    if err:
+        return _error_response(err)
 
     parts = _get_elements_in_phase(doc, phase)
     ref_plane = _find_reference_plane_for_phase(doc, phase)
@@ -386,7 +407,7 @@ def get_panel_detail(uiapp, request, phase_id):
     if ref_plane is not None:
         rp_info = {
             "name": ref_plane.Name,
-            "element_id": ref_plane.Id.IntegerValue,
+            "element_id": eid_int(ref_plane.Id),
         }
 
     parts_list = [serialize_part_instance(p) for p in parts if p is not None]
@@ -412,13 +433,14 @@ def get_panel_detail(uiapp, request, phase_id):
 # ===================================================================
 
 @api.route("/panels/<int:phase_id>/parts", methods=["POST"])
-def place_part(uiapp, request, phase_id):
+def place_part(uiapp, request, phase_id=None):
     doc = uiapp.ActiveUIDocument.Document
     data = request.data or {}
 
-    phase = _get_phase_by_id(doc, phase_id)
-    if phase is None:
-        return _error_response("Phase {} not found".format(phase_id))
+    phase_name = data.get("phase_name", None)
+    phase, err = _resolve_phase(doc, phase_id=phase_id, phase_name=phase_name)
+    if err:
+        return _error_response(err)
 
     family_name = data.get("family_name", "")
     type_name = data.get("type_name", "")
@@ -496,7 +518,7 @@ def place_part(uiapp, request, phase_id):
 
         resp = {
             "success": True,
-            "element_id": instance.Id.IntegerValue,
+            "element_id": eid_int(instance.Id),
             "family": family_name,
             "type": type_name,
             "phase": phase.Name,
@@ -518,13 +540,14 @@ def place_part(uiapp, request, phase_id):
 # ===================================================================
 
 @api.route("/panels/<int:phase_id>/parts/batch", methods=["POST"])
-def batch_place_parts(uiapp, request, phase_id):
+def batch_place_parts(uiapp, request, phase_id=None):
     doc = uiapp.ActiveUIDocument.Document
     data = request.data or {}
 
-    phase = _get_phase_by_id(doc, phase_id)
-    if phase is None:
-        return _error_response("Phase {} not found".format(phase_id))
+    phase_name = data.get("phase_name", None)
+    phase, err = _resolve_phase(doc, phase_id=phase_id, phase_name=phase_name)
+    if err:
+        return _error_response(err)
 
     parts_data = data.get("parts", [])
     if not parts_data:
@@ -588,7 +611,7 @@ def batch_place_parts(uiapp, request, phase_id):
 
                 placed.append({
                     "index": idx,
-                    "element_id": instance.Id.IntegerValue,
+                    "element_id": eid_int(instance.Id),
                     "family": family_name,
                 })
 
@@ -630,13 +653,33 @@ def create_panel(uiapp, request):
     name = data.get("name", "New Panel")
     create_ref_plane = data.get("create_reference_plane", True)
 
+    # Find existing phase by name, or use last phase
+    phase = None
+    for p in doc.Phases:
+        if p.Name.strip().lower() == name.strip().lower():
+            phase = p
+            break
+
+    phase_created = False
+    phase_id = None
+    phase_name = name
+
+    # Phase creation is not available via the Revit API (Revit 2024+).
+    # If no matching phase exists, report it and still create the ref plane.
+    if phase is not None:
+        phase_id = eid_int(phase.Id)
+        phase_name = phase.Name
+    else:
+        # Use the last existing phase as fallback
+        phases_list = list(doc.Phases)
+        if phases_list:
+            phase = phases_list[-1]
+            phase_id = eid_int(phase.Id)
+            phase_name = phase.Name
+
     txn = DB.Transaction(doc, "MCP Create Panel")
     txn.Start()
     try:
-        # Create phase (Revit API: doc.Create.NewPhase takes name as argument)
-        phase = doc.Create.NewPhase(name)
-        phase_id = phase.Id.IntegerValue
-
         ref_plane_id = None
         ref_plane_name = None
 
@@ -660,19 +703,26 @@ def create_panel(uiapp, request):
                 bubble_end, free_end, cut_vec, doc.ActiveView
             )
             ref_plane.Name = plane_name
-            ref_plane_id = ref_plane.Id.IntegerValue
+            ref_plane_id = eid_int(ref_plane.Id)
             ref_plane_name = plane_name
 
         txn.Commit()
 
-        return {
+        result = {
             "success": True,
             "phase_id": phase_id,
-            "phase_name": name,
+            "phase_name": phase_name,
             "reference_plane_id": ref_plane_id,
             "reference_plane_name": ref_plane_name,
             "transaction_status": "committed",
         }
+        if phase is not None and phase.Name.strip().lower() != name.strip().lower():
+            result["warning"] = (
+                "Phase '{}' does not exist and cannot be created via API. "
+                "Using existing phase '{}' instead. "
+                "Create the phase manually in Revit (Manage > Phases) if needed."
+            ).format(name, phase.Name)
+        return result
 
     except Exception as exc:
         if txn.HasStarted() and not txn.HasEnded():
@@ -705,7 +755,7 @@ def generate_cutlist(uiapp, request):
         elements = _get_elements_in_phase(doc, phase)
         for e in elements:
             parts.append(e)
-            phase_map[e.Id.IntegerValue] = phase.Name
+            phase_map[eid_int(e.Id)] = phase.Name
 
     elif scope == "panels":
         phase_ids = data.get("phase_ids", [])
@@ -714,13 +764,13 @@ def generate_cutlist(uiapp, request):
             if phase:
                 for e in _get_elements_in_phase(doc, phase):
                     parts.append(e)
-                    phase_map[e.Id.IntegerValue] = phase.Name
+                    phase_map[eid_int(e.Id)] = phase.Name
 
     else:  # "all"
         for phase in doc.Phases:
             for e in _get_elements_in_phase(doc, phase):
                 parts.append(e)
-                phase_map[e.Id.IntegerValue] = phase.Name
+                phase_map[eid_int(e.Id)] = phase.Name
 
     # Build part data
     part_records = []
@@ -743,11 +793,11 @@ def generate_cutlist(uiapp, request):
             width = 0.0
 
         part_records.append({
-            "element_id": p.Id.IntegerValue,
+            "element_id": eid_int(p.Id),
             "family": family_name,
             "length": length,
             "width": width,
-            "panel": phase_map.get(p.Id.IntegerValue, "Unknown"),
+            "panel": phase_map.get(eid_int(p.Id), "Unknown"),
         })
 
     # Group
@@ -817,7 +867,7 @@ def generate_cutlist(uiapp, request):
     if scope == "panel":
         phase = _get_phase_by_id(doc, data.get("phase_id"))
         if phase:
-            resp["phase_id"] = phase.Id.IntegerValue
+            resp["phase_id"] = eid_int(phase.Id)
             resp["phase_name"] = phase.Name
     return resp
 
@@ -837,7 +887,7 @@ def list_reference_planes(uiapp, request):
         origin = rp.GetPlane().Origin if rp.GetPlane() else None
         normal = rp.GetPlane().Normal if rp.GetPlane() else None
         planes.append({
-            "element_id": rp.Id.IntegerValue,
+            "element_id": eid_int(rp.Id),
             "name": rp.Name,
             "origin": serialize_xyz(origin),
             "direction": serialize_xyz(normal),
@@ -872,7 +922,7 @@ def list_types(uiapp, request, category):
         types.append({
             "family": family_name,
             "type": type_name,
-            "type_id": et.Id.IntegerValue,
+            "type_id": eid_int(et.Id),
         })
     return {"category": category, "types": types}
 
@@ -890,7 +940,7 @@ def list_levels(uiapp, request):
         levels.append({
             "name": lev.Name,
             "elevation_ft": round(lev.Elevation, 6),
-            "element_id": lev.Id.IntegerValue,
+            "element_id": eid_int(lev.Id),
         })
     levels.sort(key=lambda l: l["elevation_ft"])
     return {"levels": levels}
@@ -913,7 +963,7 @@ def list_schedules(uiapp, request):
         if vs.IsTitleblockRevisionSchedule:
             continue
         schedules.append({
-            "schedule_id": vs.Id.IntegerValue,
+            "schedule_id": eid_int(vs.Id),
             "name": vs.Name,
         })
     return {"schedules": schedules}
@@ -1036,7 +1086,7 @@ def create_view(uiapp, request):
 
         return {
             "success": True,
-            "view_id": view.Id.IntegerValue,
+            "view_id": eid_int(view.Id),
             "name": view.Name,
             "transaction_status": "committed",
         }
@@ -1078,17 +1128,17 @@ def delete_elements(uiapp, request):
     deleted = []
     failed = []
     try:
-        for eid_int in element_ids:
-            eid = DB.ElementId(eid_int)
+        for eid_val in element_ids:
+            eid = DB.ElementId(eid_val)
             elem = doc.GetElement(eid)
             if elem is None:
-                failed.append({"element_id": eid_int, "error": "Not found"})
+                failed.append({"element_id": eid_val, "error": "Not found"})
                 continue
             try:
                 doc.Delete(eid)
-                deleted.append(eid_int)
+                deleted.append(eid_val)
             except Exception as exc:
-                failed.append({"element_id": eid_int, "error": str(exc)})
+                failed.append({"element_id": eid_val, "error": str(exc)})
 
         txn.Commit()
         return {
@@ -1160,7 +1210,7 @@ def discovery_summary(uiapp, request):
         parts = _get_elements_in_phase(doc, phase)
         phases.append({
             "name": phase.Name,
-            "element_id": phase.Id.IntegerValue,
+            "element_id": eid_int(phase.Id),
             "part_count": len(parts),
         })
 
@@ -1178,8 +1228,8 @@ def discovery_summary(uiapp, request):
         DB.BuiltInCategory.OST_Assemblies
     ).WhereElementIsNotElementType():
         assemblies.append({
-            "name": asm.Name if hasattr(asm, "Name") else str(asm.Id.IntegerValue),
-            "element_id": asm.Id.IntegerValue,
+            "name": asm.Name if hasattr(asm, "Name") else str(eid_int(asm.Id)),
+            "element_id": eid_int(asm.Id),
         })
 
     # Groups
@@ -1187,7 +1237,7 @@ def discovery_summary(uiapp, request):
     for grp in DB.FilteredElementCollector(doc).OfClass(DB.Group):
         groups.append({
             "name": grp.Name,
-            "element_id": grp.Id.IntegerValue,
+            "element_id": eid_int(grp.Id),
         })
 
     # Counts
@@ -1335,7 +1385,7 @@ def discovery_connections(uiapp, request, element_id):
                 je = doc.GetElement(jid)
                 if je:
                     connections["joined_to"].append({
-                        "element_id": jid.IntegerValue,
+                        "element_id": eid_int(jid),
                         "category": je.Category.Name if je.Category else None,
                         "type": DB.Element.Name.__get__(
                             doc.GetElement(je.GetTypeId())
@@ -1352,7 +1402,7 @@ def discovery_connections(uiapp, request, element_id):
             de = doc.GetElement(did)
             if de and hasattr(de, "Host") and de.Host and de.Host.Id == elem.Id:
                 connections["hosted_elements"].append({
-                    "element_id": did.IntegerValue,
+                    "element_id": eid_int(did),
                     "category": de.Category.Name if de.Category else None,
                     "family": _get_family_name(doc, de),
                     "type": _get_type_name(doc, de),
@@ -1364,7 +1414,7 @@ def discovery_connections(uiapp, request, element_id):
     if hasattr(elem, "Host") and elem.Host:
         host = elem.Host
         connections["host"] = {
-            "element_id": host.Id.IntegerValue,
+            "element_id": eid_int(host.Id),
             "category": host.Category.Name if host.Category else None,
             "type": _get_type_name(doc, host),
         }
@@ -1374,8 +1424,8 @@ def discovery_connections(uiapp, request, element_id):
         asm = doc.GetElement(elem.AssemblyInstanceId)
         if asm:
             connections["assembly"] = {
-                "name": asm.Name if hasattr(asm, "Name") else str(asm.Id.IntegerValue),
-                "element_id": asm.Id.IntegerValue,
+                "name": asm.Name if hasattr(asm, "Name") else str(eid_int(asm.Id)),
+                "element_id": eid_int(asm.Id),
             }
 
     return {
@@ -1425,8 +1475,8 @@ def discovery_bom(uiapp, request):
                 if me:
                     elements.append(me)
     elif scope == "elements":
-        for eid_int in data.get("element_ids", []):
-            e = doc.GetElement(DB.ElementId(eid_int))
+        for eid_val in data.get("element_ids", []):
+            e = doc.GetElement(DB.ElementId(eid_val))
             if e:
                 elements.append(e)
     else:  # "all"
@@ -1706,7 +1756,7 @@ def discovery_families(uiapp, request):
 
         families_dict[fam_name]["types"].append({
             "name": type_name,
-            "type_id": fs.Id.IntegerValue,
+            "type_id": eid_int(fs.Id),
             "type_parameters": type_params,
         })
 
@@ -1752,7 +1802,7 @@ def discovery_families(uiapp, request):
                     type_params[param.Definition.Name] = get_parameter_value(param)
             families_dict[sys_fam_name]["types"].append({
                 "name": tn,
-                "type_id": et.Id.IntegerValue,
+                "type_id": eid_int(et.Id),
                 "type_parameters": type_params,
             })
 
@@ -1796,7 +1846,7 @@ def discovery_assembly(uiapp, request, assembly_id):
             if me is None:
                 continue
             member_data = {
-                "element_id": mid.IntegerValue,
+                "element_id": eid_int(mid),
                 "category": me.Category.Name if me.Category else None,
                 "type": _get_type_name(doc, me),
                 "role": "member",
@@ -1812,7 +1862,7 @@ def discovery_assembly(uiapp, request, assembly_id):
             if hasattr(v, "AssociatedAssemblyInstanceId"):
                 if v.AssociatedAssemblyInstanceId == eid:
                     asm_views.append({
-                        "view_id": v.Id.IntegerValue,
+                        "view_id": eid_int(v.Id),
                         "name": v.Name,
                         "view_type": str(v.ViewType),
                     })
@@ -1826,7 +1876,7 @@ def discovery_assembly(uiapp, request, assembly_id):
             if hasattr(s, "AssociatedAssemblyInstanceId"):
                 if s.AssociatedAssemblyInstanceId == eid:
                     asm_sheets.append({
-                        "sheet_id": s.Id.IntegerValue,
+                        "sheet_id": eid_int(s.Id),
                         "sheet_number": s.SheetNumber,
                         "sheet_name": s.Name,
                     })
@@ -1894,7 +1944,7 @@ def discovery_view(uiapp, request, view_id):
 
         if cat_name not in by_category:
             by_category[cat_name] = []
-        by_category[cat_name].append(elem.Id.IntegerValue)
+        by_category[cat_name].append(eid_int(elem.Id))
 
     visible_count = sum(len(ids) for ids in by_category.values())
 
@@ -1904,7 +1954,7 @@ def discovery_view(uiapp, request, view_id):
         placed_views = sheet.GetAllPlacedViews()
         if view.Id in placed_views:
             on_sheets.append({
-                "sheet_id": sheet.Id.IntegerValue,
+                "sheet_id": eid_int(sheet.Id),
                 "sheet_number": sheet.SheetNumber,
                 "sheet_name": sheet.Name,
             })
@@ -1938,7 +1988,7 @@ def discovery_sheets(uiapp, request):
             v = doc.GetElement(vid)
             if v:
                 views_on.append({
-                    "view_id": vid.IntegerValue,
+                    "view_id": eid_int(vid),
                     "name": v.Name,
                     "view_type": str(v.ViewType),
                 })
@@ -1949,7 +1999,7 @@ def discovery_sheets(uiapp, request):
             DB.ElementClassFilter(DB.FamilyInstance)
         ):
             tb = doc.GetElement(tb_id)
-            if tb and tb.Category and tb.Category.Id.IntegerValue == int(
+            if tb and tb.Category and eid_int(tb.Category.Id) == int(
                 DB.BuiltInCategory.OST_TitleBlocks
             ):
                 tb_type = doc.GetElement(tb.GetTypeId())
@@ -1964,7 +2014,7 @@ def discovery_sheets(uiapp, request):
             revision = rev_param.AsString()
 
         sheets.append({
-            "sheet_id": sheet.Id.IntegerValue,
+            "sheet_id": eid_int(sheet.Id),
             "sheet_number": sheet.SheetNumber,
             "sheet_name": sheet.Name,
             "title_block": tb_name,
@@ -1986,8 +2036,8 @@ def discovery_warnings(uiapp, request):
     warnings = []
     if hasattr(doc, "GetWarnings"):
         for w in doc.GetWarnings():
-            elem_ids = [eid.IntegerValue for eid in w.GetFailingElements()]
-            add_ids = [eid.IntegerValue for eid in w.GetAdditionalElements()]
+            elem_ids = [eid_int(eid) for eid in w.GetFailingElements()]
+            add_ids = [eid_int(eid) for eid in w.GetAdditionalElements()]
             warnings.append({
                 "description": w.GetDescriptionText(),
                 "severity": str(w.GetSeverity()),

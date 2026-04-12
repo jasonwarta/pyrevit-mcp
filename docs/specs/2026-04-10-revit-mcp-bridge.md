@@ -704,13 +704,15 @@ Response (200):
 
 If any placement fails, the entire batch is rolled back (atomic). The `failed` array includes the index and error for each failure.
 
-#### 6.2.10 Create Panel (Phase + Reference Plane)
+#### 6.2.10 Create Panel (Reference Plane + Phase Assignment)
 
 ```
 POST /camper-mcp/panels
 ```
 
-Requires Revit API context (`doc`). Creates a new phase and optionally a reference plane for it.
+Requires Revit API context (`doc`). Creates a reference plane for a panel and associates it with an existing phase.
+
+**Phase API limitation (Revit 2024+):** Phases cannot be created or renamed via the Revit API. They must be created manually through Revit's UI (Manage tab > Phases dialog). However, the `PHASE_CREATED` built-in parameter on family instances **is writable**, so parts can be assigned to any existing phase by name or ID. This endpoint looks up an existing phase by name; if not found, it falls back to the last phase and returns a warning.
 
 Request body:
 ```json
@@ -723,7 +725,7 @@ Request body:
 }
 ```
 
-If `create_reference_plane` is false, only the phase is created. The parts can later be associated with an existing reference plane.
+If `create_reference_plane` is false, only the phase lookup is performed.
 
 Response (200):
 ```json
@@ -2344,3 +2346,31 @@ pyRevit automatically adds the extension's `lib/` directory to `sys.path` (as th
 - The `lib/` directory takes precedence over other paths, so module names in `lib/` should not collide with standard library or pyRevit module names.
 
 **See also**: Section 5.3.1.
+
+### 14.8 Phases Cannot Be Created or Renamed via API
+
+The Revit API (as of Revit 2026) does not expose methods to create or rename phases. Specifically:
+
+- `DB.Phase` has no static `Create()` method.
+- `doc.Create` has no `NewPhase()` method.
+- `Phase.Name` setter throws "This element does not support assignment of a user-specified name."
+- The `PHASE_NAME` built-in parameter is read-only.
+
+Phases must be created and named through Revit's UI: **Manage tab > Phases dialog**.
+
+However, the `PHASE_CREATED` built-in parameter on family instances **is writable**. This means parts can be programmatically assigned to any existing phase by setting this parameter. The `create_panel` endpoint was updated to look up existing phases by name instead of attempting to create them.
+
+**See also**: Section 6.2.10.
+
+### 14.9 `ElementId.IntegerValue` Removed in Revit 2024+
+
+Revit 2024 changed `ElementId` from `int`-backed to `long`-backed. The `.IntegerValue` property was removed and replaced with `.Value`. Extension code must use a compatibility helper:
+
+```python
+def eid_int(eid):
+    if hasattr(eid, "Value"):
+        return eid.Value  # Revit 2024+
+    return eid.IntegerValue  # Revit 2022-2023
+```
+
+This is defined in `serializers.py` and imported by all other extension modules.

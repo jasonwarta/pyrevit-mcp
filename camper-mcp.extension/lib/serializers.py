@@ -22,6 +22,17 @@ from pyrevit.api import DB
 
 
 # ---------------------------------------------------------------------------
+# ElementId compatibility (Revit 2024+ uses .Value, older uses .IntegerValue)
+# ---------------------------------------------------------------------------
+
+def eid_int(eid):
+    """Extract the integer value from an ElementId, compatible with all Revit versions."""
+    if hasattr(eid, "Value"):
+        return eid.Value  # Revit 2024+
+    return eid.IntegerValue  # Revit 2022-2023
+
+
+# ---------------------------------------------------------------------------
 # Primitive converters
 # ---------------------------------------------------------------------------
 
@@ -40,7 +51,7 @@ def serialize_element_id(eid):
     """Convert an ElementId to an integer."""
     if eid is None or eid == DB.ElementId.InvalidElementId:
         return None
-    return eid.IntegerValue
+    return eid_int(eid)
 
 
 def serialize_line(line):
@@ -184,7 +195,7 @@ def serialize_element_summary(element, parameter_names=None):
         params = get_parameters_dict(element, parameter_names)
 
     return {
-        "element_id": element.Id.IntegerValue,
+        "element_id": eid_int(element.Id),
         "category": category_name,
         "family": family_name,
         "type": type_name,
@@ -235,7 +246,7 @@ def serialize_part_instance(element):
         rotation_degrees = round(math.degrees(loc.Rotation), 6)
 
     return {
-        "element_id": element.Id.IntegerValue,
+        "element_id": eid_int(element.Id),
         "family": family_name,
         "type": type_name,
         "parameters": params,

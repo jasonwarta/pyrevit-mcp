@@ -269,15 +269,23 @@ def revit_list_panels() -> str:
 
 
 @mcp.tool()
-def revit_get_panel(phase_id: int) -> str:
+def revit_get_panel(phase_id: int | None = None, phase_name: str | None = None) -> str:
     """Get all parts on a panel with families, parameters, and positions.
+
+    Specify the panel by ID or by name.
 
     Args:
         phase_id: Phase ElementId representing the panel.
+        phase_name: Phase name (alternative to phase_id).
     """
-    data = _request(
-        "GET", f"/panels/{phase_id}", tool_name="revit_get_panel",
-    )
+    if phase_name and not phase_id:
+        data = _request(
+            "GET", f"/panels/by-name/{phase_name}", tool_name="revit_get_panel",
+        )
+    else:
+        data = _request(
+            "GET", f"/panels/{phase_id}", tool_name="revit_get_panel",
+        )
     return json.dumps(data, indent=2)
 
 
@@ -288,24 +296,28 @@ def revit_get_panel(phase_id: int) -> str:
 
 @mcp.tool()
 def revit_place_part(
-    phase_id: int,
     family_name: str,
     type_name: str,
     x: float,
     y: float,
     z: float,
+    phase_id: int | None = None,
+    phase_name: str | None = None,
     rotation_degrees: float = 0.0,
     parameters: dict[str, Any] | None = None,
 ) -> str:
     """Place a single part family instance on a panel.
 
+    Specify the target panel by phase_id or phase_name.
+
     Args:
-        phase_id: Target panel (phase) ID.
         family_name: Part family name (e.g. "Stud_1.5").
         type_name: Type name within the family (e.g. "Standard").
         x: X location in feet.
         y: Y location in feet.
         z: Z location in feet.
+        phase_id: Target panel (phase) ID.
+        phase_name: Target panel name (alternative to phase_id).
         rotation_degrees: Z-axis rotation in degrees (default 0).
         parameters: Optional parameter values to set after placement.
     """
@@ -317,8 +329,12 @@ def revit_place_part(
     }
     if parameters:
         body["parameters"] = parameters
+    if phase_name and not phase_id:
+        body["phase_name"] = phase_name
+    # Use phase_id 0 as placeholder when routing by name
+    pid = phase_id or 0
     data = _request(
-        "POST", f"/panels/{phase_id}/parts",
+        "POST", f"/panels/{pid}/parts",
         json_body=body, tool_name="revit_place_part",
     )
     return json.dumps(data, indent=2)
@@ -331,19 +347,22 @@ def revit_place_part(
 
 @mcp.tool()
 def revit_batch_place_parts(
-    phase_id: int,
     parts: list[dict[str, Any]],
+    phase_id: int | None = None,
+    phase_name: str | None = None,
 ) -> str:
     """Place multiple parts on a panel in a single atomic transaction.
 
+    Specify the target panel by phase_id or phase_name.
     Each part dict should have: family_name, type_name, x, y, z,
     optional rotation_degrees, optional parameters.
 
     Args:
-        phase_id: Target panel (phase) ID.
         parts: List of part definitions. Each has family_name, type_name,
                location (x/y/z in feet), optional rotation_degrees,
                optional parameters dict.
+        phase_id: Target panel (phase) ID.
+        phase_name: Target panel name (alternative to phase_id).
     """
     # Normalize part format for the API
     api_parts = []
@@ -362,9 +381,13 @@ def revit_batch_place_parts(
             part_body["parameters"] = p["parameters"]
         api_parts.append(part_body)
 
+    body: dict[str, Any] = {"parts": api_parts}
+    if phase_name and not phase_id:
+        body["phase_name"] = phase_name
+    pid = phase_id or 0
     data = _request(
-        "POST", f"/panels/{phase_id}/parts/batch",
-        json_body={"parts": api_parts},
+        "POST", f"/panels/{pid}/parts/batch",
+        json_body=body,
         tool_name="revit_batch_place_parts",
     )
     return json.dumps(data, indent=2)
